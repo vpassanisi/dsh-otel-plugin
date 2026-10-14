@@ -1,0 +1,51 @@
+{
+  "name": "dsh-otel-plugin",
+  "version": "0.1.0",
+  "description": "Standalone DSH plugin that exports OpenTelemetry GenAI traces over OTLP",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist/index.mjs",
+    "dist/index.d.mts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --clean --out-dir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "prepack": "npm run build",
+    "package": "npm pack"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.223.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.223.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-trace": "^2.12.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@types/node": "^22.20.5",
+    "tsdown": "^0.23.1",
+    "typescript": "^7.0.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  }
+}
