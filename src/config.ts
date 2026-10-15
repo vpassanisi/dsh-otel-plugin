@@ -9,8 +9,8 @@ const EndpointSchema = Schema.object({
   /** HTTP requires a complete traces URL. gRPC accepts a target such as host:4317 or unix:///path. */
   url: Schema.string().default(''),
   protocol: ProtocolSchema.default('http/protobuf'),
-  /** Name of an environment variable containing comma-separated key=value headers. */
-  headersEnv: Schema.string().default(''),
+  /** Header values sent to this destination as HTTP headers or gRPC metadata. */
+  headers: Schema.dict(Schema.string()).default({}),
   timeoutMs: Schema.natural().min(100).max(120_000).default(5_000),
 })
 
@@ -55,29 +55,30 @@ function firstValue(...values: Array<string | undefined>): string | undefined {
   return values.find(value => value !== undefined && value.trim() !== '')?.trim()
 }
 
-function parseHeaders(raw: string, envName: string): Record<string, string> {
-  const headers: Record<string, string> = {}
-  for (const pair of raw.split(',')) {
-    const separator = pair.indexOf('=')
-    if (separator <= 0) {
-      throw new Error(`Invalid headers in environment variable ${envName}; expected comma-separated key=value pairs`)
-    }
-    const key = pair.slice(0, separator).trim()
-    const value = pair.slice(separator + 1).trim()
-    if (!key) {
-      throw new Error(`Invalid headers in environment variable ${envName}; header names cannot be empty`)
-    }
-    headers[key] = value
-  }
-  return headers
-}
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/
 
-function resolveHeaders(headersEnv: string | undefined, env: Environment): Record<string, string> | undefined {
-  const envName = firstValue(headersEnv)
-  if (!envName) return undefined
-  const value = firstValue(env[envName])
-  if (!value) throw new Error(`Environment variable ${envName} is required for endpoint headers`)
-  return parseHeaders(value, envName)
+function resolveHeaders(headers: Record<string, string> | undefined, endpointIndex: number): Record<string, string> | undefined {
+  const entries = Object.entries(headers ?? {})
+  if (entries.length === 0) return undefined
+
+  const normalized: Array<[string, string]> = []
+  const seen = new Set<string>()
+  for (const [rawName, value] of entries) {
+    const name = rawName.trim()
+    const normalizedName = name.toLowerCase()
+    if (!HEADER_NAME_PATTERN.test(name)) {
+      throw new Error(`OTLP destination ${endpointIndex + 1} has an invalid header name.`)
+    }
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`OTLP destination ${endpointIndex + 1} has an invalid header value.`)
+    }
+    if (seen.has(normalizedName)) {
+      throw new Error(`OTLP destination ${endpointIndex + 1} has duplicate header names.`)
+    }
+    seen.add(normalizedName)
+    normalized.push([normalizedName, value])
+  }
+  return Object.fromEntries(normalized)
 }
 
 function validateHttpEndpoint(endpoint: string): string {
@@ -132,7 +133,7 @@ function resolveEndpoint(endpoint: EndpointInput, index: number, env: Environmen
   return {
     url,
     protocol,
-    headers: resolveHeaders(endpoint.headersEnv, env),
+    headers: resolveHeaders(endpoint.headers, index),
     timeoutMs,
   }
 }

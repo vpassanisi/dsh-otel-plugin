@@ -22,11 +22,13 @@ serviceName: dsh
 endpoints:
   - url: https://collector-one.example/v1/traces
     protocol: http/protobuf
-    headersEnv: OTLP_COLLECTOR_ONE_HEADERS
+    headers:
+      authorization: "Bearer <runtime-supplied-token>"
     timeoutMs: 5000
   - url: https://collector-two.example:4317
     protocol: grpc
-    headersEnv: OTLP_COLLECTOR_TWO_HEADERS
+    headers:
+      x-api-key: "<runtime-supplied-key>"
     timeoutMs: 8000
 ```
 
@@ -37,21 +39,16 @@ endpoints:
 | `endpoints` | `[]` | Export destinations. An empty list creates no exporters. |
 | `endpoints[].url` | required | Complete HTTP trace URL, including `/v1/traces`, or a gRPC target such as `collector:4317` or `unix:///path/to/socket`. |
 | `endpoints[].protocol` | `http/protobuf` | Selects `http/protobuf` or `grpc`; `http/json` is not supported. |
-| `endpoints[].headersEnv` | unset | Optional environment variable name containing comma-separated `key=value` headers. Required variables must be set when the plugin loads. |
+| `endpoints[].headers` | `{}` | Optional map of header names to values, sent as HTTP headers or gRPC metadata. |
 | `endpoints[].timeoutMs` | `5000` | Per-destination export timeout, from 100 to 120000 milliseconds. |
 | `capturePrompts` | `false` | Adds redacted model input messages to `gen_ai.input.messages`. |
 | `captureResponses` | `false` | Adds redacted model output messages to `gen_ai.output.messages`. |
 | `captureToolArguments` | `false` | Adds redacted arguments to `gen_ai.tool.call.arguments` and captured tool-call messages. |
 | `maxContentLength` | `8192` | Maximum serialized length for each captured content attribute. |
 
-Configure destination authentication outside the profile patch, for example:
+Header values are passed through as configured; the plugin does not store credentials or resolve them from environment variables. A host integration can read credentials from its secret store and populate `headers` when it builds runtime config. Avoid committing real credentials in a persistent profile patch.
 
-```sh
-export OTLP_COLLECTOR_ONE_HEADERS='authorization=Bearer token-one'
-export OTLP_COLLECTOR_TWO_HEADERS='authorization=Bearer token-two'
-```
-
-For gRPC, these headers are sent as request metadata. HTTP headers and gRPC metadata are resolved independently for each destination. OTEL's standard `OTEL_EXPORTER_OTLP_*_ENDPOINT` and `*_PROTOCOL` variables do not select destinations; configure destinations in `endpoints`. `OTEL_SERVICE_NAME` continues to override `serviceName`. OTEL standard exporter header and TLS environment settings may also be applied by the underlying exporters.
+For gRPC, these headers are sent as request metadata. HTTP headers and gRPC metadata are configured independently for each destination. OTEL's standard `OTEL_EXPORTER_OTLP_*_ENDPOINT` and `*_PROTOCOL` variables do not select destinations; configure destinations in `endpoints`. `OTEL_SERVICE_NAME` continues to override `serviceName`. Standard exporter TLS environment settings may also be applied by the underlying exporters.
 
 All content capture is opt-in. Captured strings redact common credential fields, bearer tokens, token-shaped keys, JWTs, and email addresses. Images and files are represented by their type only. Oversized values are truncated and marked. Tool results are not copied to tool spans.
 
@@ -59,7 +56,7 @@ Spans use `invoke_agent` roots, `chat` children per model attempt, and `execute_
 
 ## Migrating from a single endpoint
 
-Replace top-level `endpoint`, `protocol`, and `exportTimeoutMs` settings with an `endpoints` list. Move the old endpoint and protocol values into one item and set its `timeoutMs` if needed. The previous OTEL endpoint and protocol variables no longer select the destination; use per-endpoint URLs and protocols in the profile. Move headers to environment variables and reference each one with `headersEnv`.
+Replace top-level `endpoint`, `protocol`, and `exportTimeoutMs` settings with an `endpoints` list. Move the old endpoint and protocol values into one item and set its `timeoutMs` if needed. The previous OTEL endpoint and protocol variables no longer select the destination; use per-endpoint URLs and protocols in the profile. Replace each `headersEnv` entry with a `headers` map. Hosts that manage secrets should resolve them from secure storage and supply the header values in runtime config.
 
 ## Development
 

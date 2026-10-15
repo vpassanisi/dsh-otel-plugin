@@ -1,6 +1,6 @@
 {
   "name": "dsh-otel-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Standalone DSH plugin that exports OpenTelemetry GenAI traces over OTLP",
   "type": "module",
   "main": "./dist/index.mjs",

@@ -45,7 +45,7 @@ const plugin: Plugin.Object<TracingConfig> = {
       resource: resourceFromAttributes({ 'service.name': resolved.serviceName }),
       spanProcessors: createSpanProcessors(resolved.endpoints),
     })
-    const tracer = provider.getTracer('dsh-otel-plugin', '0.1.0')
+    const tracer = provider.getTracer('dsh-otel-plugin', '0.1.1')
     const adapter = new TraceAdapter(tracer, resolved)
     const logger = (ctx as Context & { logger?: (name: string) => { warn?: (message: string, error?: unknown) => void } })
       .logger?.('dsh-otel-plugin')

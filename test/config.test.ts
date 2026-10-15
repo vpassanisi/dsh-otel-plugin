@@ -21,18 +21,16 @@ test('each endpoint keeps its own URL, protocol, headers, and timeout', () => {
       {
         url: 'https://http-collector.example/v1/traces',
         protocol: 'http/protobuf',
-        headersEnv: 'FIRST_COLLECTOR_HEADERS',
+        headers: { Authorization: 'Bearer first-token', 'x-tenant': 'one' },
       },
       {
         url: 'grpc-collector.example:4317',
         protocol: 'grpc',
-        headersEnv: 'SECOND_COLLECTOR_HEADERS',
+        headers: { authorization: 'Bearer second-token' },
         timeoutMs: 2_000,
       },
     ],
   }, {
-    FIRST_COLLECTOR_HEADERS: 'authorization=Bearer first-token,x-tenant=one',
-    SECOND_COLLECTOR_HEADERS: 'authorization=Bearer second-token',
     OTEL_EXPORTER_OTLP_PROTOCOL: 'http/json',
     OTEL_EXPORTER_OTLP_ENDPOINT: 'https://ignored.example/otlp',
   })
@@ -80,14 +78,14 @@ test('gRPC accepts HTTP(S), host:port, and unix socket targets', () => {
     /Invalid OTLP gRPC endpoint target/)
 })
 
-test('referenced header environment variables must exist and contain key-value pairs', () => {
+test('endpoint headers reject invalid names and line breaks', () => {
   assert.throws(() => resolveConfig({
-    endpoints: [{ url: 'https://collector.example/v1/traces', headersEnv: 'MISSING_HEADERS' }],
-  }, {}), /MISSING_HEADERS is required/)
+    endpoints: [{ url: 'https://collector.example/v1/traces', headers: { 'bad header': 'value' } }],
+  }, {}), /invalid header name/)
 
   assert.throws(() => resolveConfig({
-    endpoints: [{ url: 'https://collector.example/v1/traces', headersEnv: 'BROKEN_HEADERS' }],
-  }, { BROKEN_HEADERS: 'not-a-pair' }), /expected comma-separated key=value pairs/)
+    endpoints: [{ url: 'https://collector.example/v1/traces', headers: { authorization: 'Bearer token\r\nInjected: value' } }],
+  }, {}), /invalid header value/)
 })
 
 test('endpoint timeouts must be between 100 and 120000 milliseconds', () => {
