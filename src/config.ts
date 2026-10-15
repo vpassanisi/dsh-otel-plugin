@@ -1,15 +1,23 @@
 import Schema from '@deepseek-ai/schemastery'
 
+const ProtocolSchema = Schema.union([
+  Schema.const('http/protobuf'),
+  Schema.const('grpc'),
+])
+
+const EndpointSchema = Schema.object({
+  /** HTTP requires a complete traces URL. gRPC accepts a target such as host:4317 or unix:///path. */
+  url: Schema.string().default(''),
+  protocol: ProtocolSchema.default('http/protobuf'),
+  /** Name of an environment variable containing comma-separated key=value headers. */
+  headersEnv: Schema.string().default(''),
+  timeoutMs: Schema.natural().min(100).max(120_000).default(5_000),
+})
+
 export const ConfigSchema = Schema.object({
   enabled: Schema.boolean().default(false),
   serviceName: Schema.string().default('dsh'),
-  protocol: Schema.union([
-    Schema.const('http/protobuf'),
-    Schema.const('grpc'),
-  ]).default('http/protobuf'),
-  /** A complete OTLP trace URL. For HTTP, include `/v1/traces`. */
-  endpoint: Schema.string().default(''),
-  exportTimeoutMs: Schema.natural().min(100).max(120_000).default(5_000),
+  endpoints: Schema.array(EndpointSchema).default([]),
   capturePrompts: Schema.boolean().default(false),
   captureResponses: Schema.boolean().default(false),
   captureToolArguments: Schema.boolean().default(false),
@@ -18,13 +26,23 @@ export const ConfigSchema = Schema.object({
 
 export type TracingConfig = Schemastery.TypeT<typeof ConfigSchema>
 export type OtlpProtocol = 'http/protobuf' | 'grpc'
+export type EndpointConfig = Schemastery.TypeT<typeof EndpointSchema>
+export type EndpointInput = Partial<EndpointConfig>
+export type TracingConfigInput = Partial<Omit<TracingConfig, 'endpoints'>> & {
+  endpoints?: EndpointInput[]
+}
+
+export interface ResolvedEndpoint {
+  url: string
+  protocol: OtlpProtocol
+  headers?: Record<string, string>
+  timeoutMs: number
+}
 
 export interface ResolvedConfig {
   enabled: boolean
   serviceName: string
-  protocol: OtlpProtocol
-  endpoint: string
-  exportTimeoutMs: number
+  endpoints: ResolvedEndpoint[]
   capturePrompts: boolean
   captureResponses: boolean
   captureToolArguments: boolean
@@ -37,69 +55,93 @@ function firstValue(...values: Array<string | undefined>): string | undefined {
   return values.find(value => value !== undefined && value.trim() !== '')?.trim()
 }
 
-function parseProtocol(value: string | undefined, fallback: OtlpProtocol): OtlpProtocol {
-  if (value === undefined) return fallback
-  if (value === 'http/protobuf' || value === 'grpc') return value
-  if (value === 'http/json') {
-    throw new Error('OTLP protocol http/json is not supported; use http/protobuf or grpc')
+function parseHeaders(raw: string, envName: string): Record<string, string> {
+  const headers: Record<string, string> = {}
+  for (const pair of raw.split(',')) {
+    const separator = pair.indexOf('=')
+    if (separator <= 0) {
+      throw new Error(`Invalid headers in environment variable ${envName}; expected comma-separated key=value pairs`)
+    }
+    const key = pair.slice(0, separator).trim()
+    const value = pair.slice(separator + 1).trim()
+    if (!key) {
+      throw new Error(`Invalid headers in environment variable ${envName}; header names cannot be empty`)
+    }
+    headers[key] = value
   }
-  throw new Error(`Unsupported OTLP trace protocol: ${value}`)
+  return headers
 }
 
-function validateEndpoint(endpoint: string, protocol: OtlpProtocol): string {
+function resolveHeaders(headersEnv: string | undefined, env: Environment): Record<string, string> | undefined {
+  const envName = firstValue(headersEnv)
+  if (!envName) return undefined
+  const value = firstValue(env[envName])
+  if (!value) throw new Error(`Environment variable ${envName} is required for endpoint headers`)
+  return parseHeaders(value, envName)
+}
+
+function validateHttpEndpoint(endpoint: string): string {
   let parsed: URL
   try {
     parsed = new URL(endpoint)
   } catch {
-    throw new Error(`Invalid OTLP endpoint URL: ${endpoint}`)
+    throw new Error(`Invalid OTLP HTTP endpoint URL: ${endpoint}`)
   }
-
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error(`OTLP ${protocol} endpoint must use http or https`)
+    throw new Error('OTLP HTTP/protobuf endpoint must use http or https')
   }
   return parsed.toString().replace(/\/$/, '')
 }
 
-function appendTracesPath(base: string): string {
-  const url = new URL(base)
-  const path = url.pathname.replace(/\/+$/, '')
-  url.pathname = path.endsWith('/v1/traces') ? path : `${path}/v1/traces`
-  return url.toString()
+function validateGrpcTarget(target: string): string {
+  const value = target.trim()
+  if (!value) throw new Error('OTLP gRPC endpoint target cannot be empty')
+  if (value.startsWith('unix://')) {
+    try {
+      const parsed = new URL(value)
+      if (!parsed.pathname) throw new Error()
+    } catch {
+      throw new Error(`Invalid OTLP gRPC endpoint target: ${target}`)
+    }
+    return value
+  }
+
+  let parsed: URL
+  try {
+    parsed = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : `https://${value}`)
+  } catch {
+    throw new Error(`Invalid OTLP gRPC endpoint target: ${target}`)
+  }
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.host) {
+    throw new Error(`Invalid OTLP gRPC endpoint target: ${target}`)
+  }
+  return value
 }
 
-export function resolveConfig(config: Partial<TracingConfig>, env: Environment = process.env): ResolvedConfig {
-  const protocol = parseProtocol(
-    firstValue(env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL, env.OTEL_EXPORTER_OTLP_PROTOCOL),
-    config.protocol ?? 'http/protobuf',
-  )
-  const traceEndpoint = firstValue(env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT)
-  const genericEndpoint = firstValue(env.OTEL_EXPORTER_OTLP_ENDPOINT)
-  const configuredEndpoint = firstValue(config.endpoint)
-  const endpoint = traceEndpoint
-    ? traceEndpoint
-    : genericEndpoint
-      ? protocol === 'http/protobuf' ? appendTracesPath(genericEndpoint) : genericEndpoint
-      : configuredEndpoint
-        ? configuredEndpoint
-        : protocol === 'http/protobuf'
-          ? 'http://localhost:4318/v1/traces'
-          : 'http://localhost:4317'
-
-  const timeout = firstValue(
-    env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT,
-    env.OTEL_EXPORTER_OTLP_TIMEOUT,
-  )
-  const parsedTimeout = timeout === undefined ? undefined : Number(timeout)
-  if (parsedTimeout !== undefined && (!Number.isInteger(parsedTimeout) || parsedTimeout <= 0)) {
-    throw new Error('OTLP timeout environment value must be a positive integer in milliseconds')
+function resolveEndpoint(endpoint: EndpointInput, index: number, env: Environment): ResolvedEndpoint {
+  const protocol = endpoint.protocol ?? 'http/protobuf'
+  const configuredUrl = endpoint.url ?? ''
+  const url = protocol === 'grpc'
+    ? validateGrpcTarget(configuredUrl)
+    : validateHttpEndpoint(configuredUrl)
+  const timeoutMs = endpoint.timeoutMs ?? 5_000
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 120_000) {
+    throw new Error(`Endpoint ${index + 1} timeoutMs must be an integer from 100 to 120000`)
   }
 
   return {
+    url,
+    protocol,
+    headers: resolveHeaders(endpoint.headersEnv, env),
+    timeoutMs,
+  }
+}
+
+export function resolveConfig(config: TracingConfigInput, env: Environment = process.env): ResolvedConfig {
+  return {
     enabled: config.enabled ?? false,
     serviceName: firstValue(env.OTEL_SERVICE_NAME, config.serviceName, 'dsh')!,
-    protocol,
-    endpoint: validateEndpoint(endpoint, protocol),
-    exportTimeoutMs: parsedTimeout ?? config.exportTimeoutMs ?? 5_000,
+    endpoints: (config.endpoints ?? []).map((endpoint, index) => resolveEndpoint(endpoint, index, env)),
     capturePrompts: config.capturePrompts ?? false,
     captureResponses: config.captureResponses ?? false,
     captureToolArguments: config.captureToolArguments ?? false,

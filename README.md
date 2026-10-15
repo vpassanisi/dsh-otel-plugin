@@ -1,6 +1,6 @@
 # DSH OpenTelemetry tracing plugin
 
-This standalone DSH bundle exports agent, model, and tool spans over OTLP.
+This standalone DSH bundle exports agent, model, and tool spans over OTLP. Every finished span is sent to each configured destination using that destination's own protocol and batch processor.
 
 ## Install
 
@@ -12,43 +12,54 @@ npm run build
 dsh plugin --profile sdk add file:/absolute/path/to/dsh-otel-plugin
 ```
 
-The bundle patch registers the plugin with tracing disabled. Edit the profile patch to enable it and set nonsecret options. The plugin uses DSH `0.1.5-rc.1` session events and Cordis lifecycle hooks.
+The bundle patch registers the plugin with tracing disabled. Edit the profile patch to enable it and configure one or more destinations. The plugin uses DSH `0.1.5-rc.1` session events and Cordis lifecycle hooks.
 
 ## Configuration
+
+```yaml
+enabled: true
+serviceName: dsh
+endpoints:
+  - url: https://collector-one.example/v1/traces
+    protocol: http/protobuf
+    headersEnv: OTLP_COLLECTOR_ONE_HEADERS
+    timeoutMs: 5000
+  - url: https://collector-two.example:4317
+    protocol: grpc
+    headersEnv: OTLP_COLLECTOR_TWO_HEADERS
+    timeoutMs: 8000
+```
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `enabled` | `false` | Enables span creation and export. |
-| `serviceName` | `dsh` | Sets the OTEL `service.name` resource attribute. |
-| `protocol` | `http/protobuf` | Selects OTLP HTTP/protobuf or `grpc`. `http/json` is rejected. |
-| `endpoint` | protocol default | Complete endpoint URL. For HTTP, include `/v1/traces`. |
-| `exportTimeoutMs` | `5000` | Export timeout, from 100 to 120000 milliseconds. |
+| `serviceName` | `dsh` | Sets the shared OTEL `service.name` resource attribute. |
+| `endpoints` | `[]` | Export destinations. An empty list creates no exporters. |
+| `endpoints[].url` | required | Complete HTTP trace URL, including `/v1/traces`, or a gRPC target such as `collector:4317` or `unix:///path/to/socket`. |
+| `endpoints[].protocol` | `http/protobuf` | Selects `http/protobuf` or `grpc`; `http/json` is not supported. |
+| `endpoints[].headersEnv` | unset | Optional environment variable name containing comma-separated `key=value` headers. Required variables must be set when the plugin loads. |
+| `endpoints[].timeoutMs` | `5000` | Per-destination export timeout, from 100 to 120000 milliseconds. |
 | `capturePrompts` | `false` | Adds redacted model input messages to `gen_ai.input.messages`. |
 | `captureResponses` | `false` | Adds redacted model output messages to `gen_ai.output.messages`. |
 | `captureToolArguments` | `false` | Adds redacted arguments to `gen_ai.tool.call.arguments` and captured tool-call messages. |
 | `maxContentLength` | `8192` | Maximum serialized length for each captured content attribute. |
 
+Configure destination authentication outside the profile patch, for example:
+
+```sh
+export OTLP_COLLECTOR_ONE_HEADERS='authorization=Bearer token-one'
+export OTLP_COLLECTOR_TWO_HEADERS='authorization=Bearer token-two'
+```
+
+For gRPC, these headers are sent as request metadata. HTTP headers and gRPC metadata are resolved independently for each destination. OTEL's standard `OTEL_EXPORTER_OTLP_*_ENDPOINT` and `*_PROTOCOL` variables do not select destinations; configure destinations in `endpoints`. `OTEL_SERVICE_NAME` continues to override `serviceName`. OTEL standard exporter header and TLS environment settings may also be applied by the underlying exporters.
+
 All content capture is opt-in. Captured strings redact common credential fields, bearer tokens, token-shaped keys, JWTs, and email addresses. Images and files are represented by their type only. Oversized values are truncated and marked. Tool results are not copied to tool spans.
 
-Spans use `invoke_agent` roots, `chat` children per model attempt, and `execute_tool` children correlated by tool call ID. Retries create separate chat spans. Child agent roots link to a known parent session span. Stream frames record first-token timing. Export runs in a private batch provider; exporter and shutdown failures are contained so they do not escape into DSH event handling.
+Spans use `invoke_agent` roots, `chat` children per model attempt, and `execute_tool` children correlated by tool call ID. Retries create separate chat spans. Child agent roots link to a known parent session span. Stream frames record first-token timing. Each destination has its own batch queue; a failed export to one endpoint does not interrupt DSH event handling or another endpoint's processor. Exporter and shutdown failures are contained.
 
-## Environment variables
+## Migrating from a single endpoint
 
-Environment settings override profile settings. Trace-specific OTEL variables take precedence over generic variables.
-
-| Variable | Behavior |
-| --- | --- |
-| `OTEL_SERVICE_NAME` | Overrides `serviceName`. |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | Overrides protocol. Accepts `http/protobuf` or `grpc`. |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | Generic protocol fallback. |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Complete trace URL; HTTP values are used as given. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Generic base URL; HTTP adds `/v1/traces`. |
-| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | Overrides export timeout in milliseconds. |
-| `OTEL_EXPORTER_OTLP_TIMEOUT` | Generic timeout fallback in milliseconds. |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Trace exporter headers, formatted as comma-separated `key=value` pairs. |
-| `OTEL_EXPORTER_OTLP_HEADERS` | Generic header fallback. |
-
-HTTP defaults to `http://localhost:4318/v1/traces`; gRPC defaults to `http://localhost:4317`. Keep authentication headers in environment variables or a host secret store. Do not put credentials in the profile patch.
+Replace top-level `endpoint`, `protocol`, and `exportTimeoutMs` settings with an `endpoints` list. Move the old endpoint and protocol values into one item and set its `timeoutMs` if needed. The previous OTEL endpoint and protocol variables no longer select the destination; use per-endpoint URLs and protocols in the profile. Move headers to environment variables and reference each one with `headersEnv`.
 
 ## Development
 

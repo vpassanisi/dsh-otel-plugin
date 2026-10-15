@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { OTLPTraceExporter as GrpcTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc'
+import { OTLPTraceExporter as HttpTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 import {
   BatchSpanProcessor,
   InMemorySpanExporter,
@@ -7,6 +9,7 @@ import {
 } from '@opentelemetry/sdk-trace'
 import { resolveConfig } from '../src/config.ts'
 import { TraceAdapter } from '../src/adapter.ts'
+import { createOtlpExporter, createSpanProcessors } from '../src/exporters.ts'
 
 function event(type: string, data: Record<string, any>, time: number) {
   return { type, data, time }
@@ -89,4 +92,50 @@ test('event handling returns while a failed batch export is pending', async () =
   await provider.forceFlush().catch(() => undefined)
   assert.equal(exportStarted, true)
   await provider.shutdown().catch(() => undefined)
+})
+
+test('fans spans out to every endpoint even when one exporter fails', async () => {
+  let failedExportCount = 0
+  const failedExporter = {
+    export(_spans: unknown[], callback: (result: { code: number; error?: Error }) => void) {
+      failedExportCount++
+      callback({ code: 1, error: new Error('collector unavailable') })
+    },
+    async shutdown() {},
+  }
+  const successfulExporter = new InMemorySpanExporter()
+  const endpoints = resolveConfig({
+    enabled: true,
+    endpoints: [
+      { url: 'http://unavailable.example/v1/traces' },
+      { url: 'http://available.example/v1/traces' },
+    ],
+  }, {}).endpoints
+  const provider = new TracerProvider({
+    spanProcessors: createSpanProcessors(endpoints, endpoint =>
+      endpoint.url.includes('unavailable') ? failedExporter as any : successfulExporter),
+  })
+
+  const span = provider.getTracer('fanout-test').startSpan('shared-span')
+  span.end()
+  await provider.forceFlush().catch(() => undefined)
+
+  assert.equal(failedExportCount, 1)
+  assert.equal(successfulExporter.getFinishedSpans().length, 1)
+  assert.equal(successfulExporter.getFinishedSpans()[0]?.name, 'shared-span')
+  await provider.shutdown().catch(() => undefined)
+})
+
+test('constructs the selected exporter for each endpoint protocol', async () => {
+  const endpoints = resolveConfig({
+    endpoints: [
+      { url: 'https://http.example/v1/traces', protocol: 'http/protobuf' },
+      { url: 'https://grpc.example:4317', protocol: 'grpc' },
+    ],
+  }, {}).endpoints
+  const exporters = endpoints.map(createOtlpExporter)
+
+  assert.ok(exporters[0] instanceof HttpTraceExporter)
+  assert.ok(exporters[1] instanceof GrpcTraceExporter)
+  await Promise.all(exporters.map(exporter => exporter.shutdown()))
 })

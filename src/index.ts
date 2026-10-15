@@ -1,10 +1,9 @@
 import type { Context, Plugin } from '@deepseek-ai/cordis'
-import { OTLPTraceExporter as GrpcTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc'
-import { OTLPTraceExporter as HttpTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 import { resourceFromAttributes } from '@opentelemetry/resources'
-import { BatchSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace'
+import { TracerProvider } from '@opentelemetry/sdk-trace'
 import { ConfigSchema, resolveConfig, type TracingConfig } from './config.ts'
 import { TraceAdapter } from './adapter.ts'
+import { createSpanProcessors } from './exporters.ts'
 
 type Session = Parameters<TraceAdapter['onSessionEvent']>[0]
 type DurableEvent = Parameters<TraceAdapter['onSessionEvent']>[1]
@@ -40,20 +39,11 @@ const plugin: Plugin.Object<TracingConfig> = {
   apply(ctx: Context, config: TracingConfig) {
     if (!config.enabled) return
     const resolved = resolveConfig(config)
+    if (resolved.endpoints.length === 0) return
 
-    const exporterConfig = { url: resolved.endpoint, timeoutMillis: resolved.exportTimeoutMs }
-    const exporter = resolved.protocol === 'grpc'
-      ? new GrpcTraceExporter(exporterConfig)
-      : new HttpTraceExporter(exporterConfig)
     const provider = new TracerProvider({
       resource: resourceFromAttributes({ 'service.name': resolved.serviceName }),
-      spanProcessors: [new BatchSpanProcessor({
-        exporter,
-        maxExportBatchSize: 128,
-        maxQueueSize: 1024,
-        scheduledDelayMillis: 1_000,
-        exportTimeoutMillis: resolved.exportTimeoutMs,
-      })],
+      spanProcessors: createSpanProcessors(resolved.endpoints),
     })
     const tracer = provider.getTracer('dsh-otel-plugin', '0.1.0')
     const adapter = new TraceAdapter(tracer, resolved)
